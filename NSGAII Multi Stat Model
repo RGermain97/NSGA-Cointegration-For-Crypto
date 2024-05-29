@@ -1,0 +1,332 @@
+!pip install numpy pandas statsmodels scipy python-binance pymoo
+
+
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.stattools import coint
+from scipy.stats import pearsonr
+from binance.client import Client
+import datetime
+import random
+from statsmodels.tsa.stattools import adfuller
+
+
+class BinanceDataFetcher:
+    def __init__(self, interval='15m', lookback=1000):
+        self.client = Client()
+        self.interval = interval
+        self.lookback = lookback
+
+    def get_data(self, symbol):
+        klines = self.client.futures_klines(symbol=symbol, interval=self.interval, limit=self.lookback)
+        timestamps = [datetime.datetime.utcfromtimestamp(kline[0] / 1000) for kline in klines]
+        close_prices = [float(kline[4]) for kline in klines]
+
+        df = pd.DataFrame({'timestamp': timestamps, symbol: close_prices})
+        df.set_index('timestamp', inplace=True)
+        df.dropna(inplace=True)  # Drop NaN values
+
+        return df
+
+    def get_symbols(self):
+        exchange_info = self.client.futures_exchange_info()
+        symbols = [symbol['symbol'] for symbol in exchange_info['symbols'] if symbol['contractType'] == 'PERPETUAL']
+
+        # Printing the total number of symbols fetched
+        print(f"Total symbols fetched: {len(symbols)}")
+
+        # Get 24h trading volume for symbols and sort them
+        volumes = []
+        for symbol in symbols:
+            ticker_data = self.client.futures_ticker(symbol=symbol)
+            if 'quoteVolume' in ticker_data:
+                volume = float(ticker_data['quoteVolume'])
+                volumes.append((symbol, volume))
+                print(f"Symbol: {symbol}, Volume: {volume}")
+            else:
+                print(f"Volume not found for Symbol: {symbol}")
+
+        volumes.sort(key=lambda x: x[1], reverse=True)
+        # Filter symbols for top 30% trading volume
+        top_30_percent = int(0.3 * len(volumes))
+        top_symbols = [symbol[0] for symbol in volumes[:top_30_percent]]
+
+        # Printing the number of top symbols chosen based on volume
+        print(f"Top symbols chosen (based on volume): {len(top_symbols)}")
+
+        return top_symbols
+
+    def fetch_data(self):
+        symbols = self.get_symbols()
+        dataframes = []
+
+        for symbol in symbols:
+            df = self.get_data(symbol)
+
+            # Check if symbol data is constant and if so, drop that symbol
+            if len(df[symbol].unique()) == 1:
+                print(f"Skipping {symbol} because it has constant values.")
+                continue
+
+            dataframes.append(df)
+
+        # Create a combined DataFrame with all symbols (even the ones not fetched)
+        combined_data = pd.concat(dataframes, axis=1).reindex(columns=symbols)
+        print(combined_data.shape)
+        print(combined_data.columns)
+
+        # Drop columns (symbols) with NaN or Inf values
+        combined_data = combined_data.dropna(axis=1, how='any')
+        combined_data = combined_data.replace([np.inf, -np.inf], np.nan).dropna(axis=1, how='any')
+
+        # Print all the remaining currency pairs
+        print(f"Remaining currency pairs after filtering: {', '.join(combined_data.columns)}")
+
+        return combined_data
+
+
+class CryptoPair:
+    def __init__(self, asset1, asset2, data):
+        if asset1 == asset2:
+            raise ValueError("Both assets cannot be the same.")
+        self.asset1 = asset1
+        self.asset2 = asset2
+        self.data = data
+        self.correlation = self.calculate_correlation()
+        self.cointegration = self.calculate_cointegration()
+        self.liquidity = self.calculate_liquidity()
+        self.spread_stability = self.calculate_spread_stability()
+        self.distance_from_equilibrium = self.calculate_distance_from_equilibrium()
+        self.spread_volatility = self.calculate_spread_volatility()
+        self.ssd = self.calculate_ssd()
+        self.nzc = self.calculate_nzc()
+        self.adf = self.calculate_adf()
+
+    def calculate_correlation(self):
+        if self.data[self.asset1].isna().any() or self.data[self.asset2].isna().any():
+            print(f"NaN values found in {self.asset1} or {self.asset2}")
+        if np.isinf(self.data[self.asset1]).any() or np.isinf(self.data[self.asset2]).any():
+            print(f"Infinite values found in {self.asset1} or {self.asset2}")
+
+        # Check for constant arrays
+        if len(np.unique(self.data[self.asset1])) == 1:
+            print(f"{self.asset1} is constant with values: {self.data[self.asset1].to_list()}")
+            return 0  # Return a default correlation value if the array is constant
+
+        if len(np.unique(self.data[self.asset2])) == 1:
+            print(f"{self.asset2} is constant with values: {self.data[self.asset2].to_list()}")
+            return 0  # Return a default correlation value if the array is constant
+
+        corr, _ = pearsonr(self.data[self.asset1], self.data[self.asset2])
+        return corr
+
+    def calculate_cointegration(self):
+        score, pvalue, _ = coint(self.data[self.asset1], self.data[self.asset2])
+        return -pvalue  # We want to maximize the negative p-value
+
+    def calculate_liquidity(self):
+        return min(self.data[self.asset1].mean(), self.data[self.asset2].mean())
+
+    def calculate_spread_stability(self):
+        spread = self.data[self.asset1] - self.data[self.asset2]
+        return -spread.std()  # Minimize spread volatility
+
+    def calculate_distance_from_equilibrium(self):
+        spread = self.data[self.asset1] - self.data[self.asset2]
+        return -abs(spread[-1] - spread.mean())
+
+    def calculate_spread_volatility(self):
+        return -(self.data[self.asset1] - self.data[self.asset2]).std()
+
+    def calculate_ssd(self):
+        squared_differences = (self.data[self.asset1] - self.data[self.asset2]) ** 2
+        return -squared_differences.sum()
+
+    def calculate_nzc(self):
+        spread = self.data[self.asset1] - self.data[self.asset2]
+        zero_crossings = np.where(np.diff(np.sign(spread)))[0]
+        return -len(zero_crossings)
+
+    def calculate_adf(self):
+        spread = self.data[self.asset1] - self.data[self.asset2]
+        print("spread: ", spread)
+        result = adfuller(spread)
+        adf_statistic = result[0]
+        return -adf_statistic
+
+    def evaluate(self):
+        return [self.correlation, self.cointegration, self.liquidity, self.spread_stability,
+                self.distance_from_equilibrium, self.spread_volatility, self.ssd,
+                self.nzc, self.adf]
+
+
+class NSGA2Optimizer:
+    def __init__(self, data, assets):
+        self.data = data
+        self.assets = assets
+
+    def fast_non_dominated_sort(self, objectives):
+        S = [[] for _ in range(len(objectives))]
+        front = [[]]
+        n = [0 for _ in range(len(objectives))]
+        rank = [0 for _ in range(len(objectives))]
+
+        for p in range(len(objectives)):
+            S[p] = []
+            n[p] = 0
+            for q in range(len(objectives)):
+                dominates_p = all([obj_p >= obj_q for obj_p, obj_q in zip(objectives[p], objectives[q])]) and any([obj_p > obj_q for obj_p, obj_q in zip(objectives[p], objectives[q])])
+                dominates_q = all([obj_q >= obj_p for obj_p, obj_q in zip(objectives[p], objectives[q])]) and any([obj_q > obj_p for obj_p, obj_q in zip(objectives[p], objectives[q])])
+
+                if dominates_p:
+                    S[p].append(q)
+                elif dominates_q:
+                    n[p] += 1
+
+            if n[p] == 0:
+                rank[p] = 0
+                if p not in front[0]:
+                    front[0].append(p)
+
+        i = 0
+        while front[i]:
+            Q = []
+            for p in front[i]:
+                for q in S[p]:
+                    n[q] -= 1
+                    if n[q] == 0:
+                        rank[q] = i + 1
+                        if q not in Q:
+                            Q.append(q)
+            i += 1
+            front.append(Q)
+
+        del front[len(front) - 1]
+        return front
+
+
+
+    def crossover(self, parent1, parent2):
+        asset_choices1 = [parent1.asset1, parent2.asset1]
+        asset_choices2 = [parent1.asset2, parent2.asset2]
+
+        # Ensure that the assets chosen for child1 are different
+        child1_asset1 = random.choice(asset_choices1)
+        child1_asset2 = random.choice(asset_choices2)
+        while child1_asset1 == child1_asset2:
+            child1_asset2 = random.choice(asset_choices2)
+
+        # Ensure that the assets chosen for child2 are different
+        child2_asset1 = random.choice(asset_choices1)
+        child2_asset2 = random.choice(asset_choices2)
+        while child2_asset1 == child2_asset2:
+            child2_asset2 = random.choice(asset_choices2)
+
+        print("Child 1 pairs: ", child1_asset1, child1_asset2)
+        print("Child 2 pairs: ", child2_asset1, child2_asset2)
+        child1 = CryptoPair(child1_asset1, child1_asset2, self.data)
+        child2 = CryptoPair(child2_asset1, child2_asset2, self.data)
+        return child1, child2
+
+    def mutate(self, pair):
+        #mutated = CryptoPair(random.choice(self.assets), random.choice(self.assets), self.data)
+        asset1 = random.choice(self.assets)
+        asset2 = random.choice(self.assets)
+        while asset1 == asset2:
+            asset2 = random.choice(self.assets)
+        mutated = CryptoPair(asset1, asset2, self.data)
+        return mutated
+
+    def optimize(self, num_generations=10, population_size=50):
+        print("here: ")
+
+        if not self.assets:
+            raise ValueError("Assets list is empty")
+
+        #population = [CryptoPair(random.choice(self.assets), random.choice(self.assets), self.data) for _ in range(population_size)]
+        population = []
+        while len(population) < population_size:
+            asset1 = random.choice(self.assets)
+            asset2 = random.choice(self.assets)
+            if asset1 != asset2:
+                population.append(CryptoPair(asset1, asset2, self.data))
+
+        print("population: ", population)
+
+        for gen in range(num_generations):
+            objectives = [individual.evaluate() for individual in population]
+            print("Objectives: ", objectives)
+            fronts = self.fast_non_dominated_sort(objectives)
+            print("Fronts: ", fronts)
+
+            children = []
+            print("population length: ", len(population))
+            if len(population) > 0:
+                print("First population: ", (population[0].asset1, population[0].asset2) )
+            else:
+                print("Population is empty!")
+
+            while len(children) < population_size:
+                parent1 = random.choice(population)
+                parent2 = random.choice(population)
+                child1, child2 = self.crossover(parent1, parent2)
+                children.append(child1)
+                children.append(child2)
+            print("Children list before slicing: ", len(children), children)
+            children = children[:population_size]
+            print("Children list: ", len(children), children)
+
+            for i in range(population_size):
+                if random.random() < 0.1:
+                    print("MUTATION in iteration" , i," for ", (children[i].asset1, children[i].asset2))
+                    children[i] = self.mutate(children[i])
+
+            print("population: ", population)
+            print("children after mutation :", children)
+            combined = population + children
+            print("combined: ", combined)
+
+            objectives_combined = [individual.evaluate() for individual in combined]
+            fronts_combined = self.fast_non_dominated_sort(objectives_combined)
+            print("fronts combined ", fronts_combined)
+            next_population = []
+            print("before")
+            for front in fronts_combined:
+                print("Front: ", front)
+                print("sth: ", [combined[i] for i in front])
+                if len(next_population) + len(front) <= population_size:
+                    print('\n',len(next_population) + len(front))
+                    next_population.extend([combined[i] for i in front])
+                    print("Next population: ", next_population)
+                else:
+                    break
+            print("\nFinal next population: ", next_population)
+
+            population = next_population
+
+        best_pairs = [population[i] for i in fronts[0]]
+        return best_pairs
+
+# Usage
+fetcher = BinanceDataFetcher()  # Remove API key and secret here
+data = fetcher.fetch_data()
+print("Data size: ", data.shape)
+print("Data table: ", data)
+print("Data columns: ", data.columns)
+
+print("Rows with NaN values:")
+print(data[data.isna().any(axis=1)])
+print("\nRows with inf values:")
+print(data[np.isinf(data).any(axis=1)])
+
+optimizer = NSGA2Optimizer(data, list(data.columns))
+print("Optimizer object: ", optimizer.data, optimizer.assets)
+best_pairs = optimizer.optimize()
+
+print("Print data.columns: ", list(data.columns))
+
+for pair in best_pairs:
+    print(pair.asset1, pair.asset2)
+
+for pair in best_pairs:
+    print(pair.asset1, pair.asset2)
